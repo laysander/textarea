@@ -423,6 +423,10 @@ function Editor(element, highlight) {
   on('keydown', event => {
     if (event.defaultPrevented) return
     prev = toString()
+    if (handleTab(event)) return
+    if (handleEnter(event)) return
+    if (handleBackspace(event)) return
+    if (handleAutoPair(event)) return
     if (isUndo(event)) doUndo(event)
     if (isRedo(event)) doRedo(event)
     if (shouldRecord(event) && !recording) {
@@ -442,6 +446,275 @@ function Editor(element, highlight) {
     if (event.inputType === 'historyUndo') doUndo(event)
     if (event.inputType === 'historyRedo') doRedo(event)
   })
+
+  const PAIRS = {
+    '(': ')',
+    '[': ']',
+    '{': '}',
+    '"': '"',
+    '\'': '\'',
+    '`': '`',
+  }
+  const CLOSERS = new Set(Object.values(PAIRS))
+
+  function handleTab(event) {
+    if (event.key !== 'Tab') return false
+    if (isCtrl(event) || event.altKey) return false
+    preventDefault(event)
+    beginRecordIfNeeded()
+
+    const current = toString()
+    const pos = save()
+    const next = applyTabToText(current, pos, event.shiftKey)
+    applyEditorChange(next)
+    return true
+  }
+
+  function handleEnter(event) {
+    if (event.key !== 'Enter') return false
+    if (event.isComposing) return false
+    if (isCtrl(event) || event.altKey) return false
+    preventDefault(event)
+    beginRecordIfNeeded()
+
+    const current = toString()
+    const pos = save()
+    const next = applyEnterToText(current, pos)
+    applyEditorChange(next)
+    return true
+  }
+
+  function handleBackspace(event) {
+    if (event.key !== 'Backspace') return false
+    if (event.isComposing) return false
+    if (isCtrl(event) || event.altKey) return false
+
+    const current = toString()
+    const pos = save()
+    const selectionStart = Math.min(pos.start, pos.end)
+    const selectionEnd = Math.max(pos.start, pos.end)
+    if (selectionStart !== selectionEnd) return false
+    if (selectionStart === 0) return false
+
+    const lineStart = current.lastIndexOf('\n', Math.max(0, selectionStart - 1)) + 1
+    const line = current.slice(lineStart)
+    const leadingWhitespaceLength = (line.match(/^[\t ]*/) || [''])[0].length
+    const indentBoundary = lineStart + leadingWhitespaceLength
+    if (selectionStart > indentBoundary) return false
+
+    let removeStart = selectionStart
+    if (current[selectionStart - 1] === '\t') {
+      removeStart = selectionStart - 1
+    } else {
+      let spaces = 0
+      let i = selectionStart - 1
+      while (i >= lineStart && current[i] === ' ' && spaces < 4) {
+        spaces++
+        i--
+      }
+      if (spaces === 0) return false
+      removeStart = selectionStart - spaces
+    }
+
+    preventDefault(event)
+    beginRecordIfNeeded()
+
+    const nextText = current.slice(0, removeStart) + current.slice(selectionStart)
+    const nextPos = {start: removeStart, end: removeStart, dir: pos.dir || '->'}
+    applyEditorChange({text: nextText, pos: nextPos})
+    return true
+  }
+
+  function handleAutoPair(event) {
+    if (event.isComposing) return false
+    if (isCtrl(event) || event.altKey) return false
+    if (event.key.length !== 1) return false
+
+    const current = toString()
+    const pos = save()
+    const selectionStart = Math.min(pos.start, pos.end)
+    const selectionEnd = Math.max(pos.start, pos.end)
+    const typed = event.key
+
+    // Skip over existing closing char (IDE-like overtype behavior).
+    if (
+      selectionStart === selectionEnd
+      && CLOSERS.has(typed)
+      && current[selectionStart] === typed
+    ) {
+      preventDefault(event)
+      const nextCursor = selectionStart + 1
+      restore({start: nextCursor, end: nextCursor, dir: '->'})
+      prev = toString()
+      return true
+    }
+
+    const close = PAIRS[typed]
+    if (!close) return false
+
+    if ((typed === '\'' || typed === '"') && /[A-Za-z0-9_]/.test(current[selectionStart - 1] || '')) {
+      return false
+    }
+
+    preventDefault(event)
+    beginRecordIfNeeded()
+
+    const selected = current.slice(selectionStart, selectionEnd)
+    const pairText = typed + selected + close
+    const nextText = current.slice(0, selectionStart) + pairText + current.slice(selectionEnd)
+
+    const nextPos = selectionStart === selectionEnd
+      ? {start: selectionStart + 1, end: selectionStart + 1, dir: '->'}
+      : {start: selectionStart + 1, end: selectionStart + 1 + selected.length, dir: pos.dir || '->'}
+
+    applyEditorChange({text: nextText, pos: nextPos})
+    return true
+  }
+
+  function beginRecordIfNeeded() {
+    if (!recording) {
+      recordHistory()
+      recording = true
+    }
+  }
+
+  function applyEditorChange(next) {
+    element.textContent = next.text
+    restore(next.pos)
+
+    // Apply highlighting immediately to keep cursor stable and avoid delayed jump.
+    const stablePos = save()
+    highlight(element)
+    restore(stablePos)
+    prev = toString()
+  }
+
+  function applyTabToText(text, pos, outdent) {
+    const dir = pos.dir || '->'
+    const selectionStart = Math.min(pos.start, pos.end)
+    const selectionEnd = Math.max(pos.start, pos.end)
+
+    if (selectionStart === selectionEnd) {
+      const lineStart = text.lastIndexOf('\n', Math.max(0, selectionStart - 1)) + 1
+
+      if (!outdent) {
+        const nextText = text.slice(0, selectionStart) + '\t' + text.slice(selectionStart)
+        const nextPos = {start: selectionStart + 1, end: selectionStart + 1, dir}
+        return {text: nextText, pos: nextPos}
+      }
+
+      let removed = 0
+      if (text.startsWith('\t', lineStart)) {
+        removed = 1
+      } else {
+        while (removed < 4 && text[lineStart + removed] === ' ') removed++
+      }
+
+      if (removed === 0) return {text, pos}
+
+      const nextText = text.slice(0, lineStart) + text.slice(lineStart + removed)
+      const cursor = selectionStart - Math.min(removed, selectionStart - lineStart)
+      const nextPos = {start: cursor, end: cursor, dir}
+      return {text: nextText, pos: nextPos}
+    }
+
+    const firstLineStart = text.lastIndexOf('\n', Math.max(0, selectionStart - 1)) + 1
+    const normalizedEnd = (
+      selectionEnd > selectionStart && text[selectionEnd - 1] === '\n'
+    ) ? selectionEnd - 1 : selectionEnd
+    const endLineBreak = text.indexOf('\n', normalizedEnd)
+    const lastLineEnd = endLineBreak === -1 ? text.length : endLineBreak
+    const block = text.slice(firstLineStart, lastLineEnd)
+    const lines = block.split('\n')
+
+    const lineOffsets = []
+    let offset = 0
+    for (const line of lines) {
+      lineOffsets.push(offset)
+      offset += line.length + 1
+    }
+
+    const deltas = []
+    const nextLines = lines.map((line) => {
+      if (!outdent) {
+        deltas.push(1)
+        return '\t' + line
+      }
+      if (line.startsWith('\t')) {
+        deltas.push(-1)
+        return line.slice(1)
+      }
+      let removed = 0
+      while (removed < 4 && line[removed] === ' ') removed++
+      if (removed > 0) {
+        deltas.push(-removed)
+        return line.slice(removed)
+      }
+      deltas.push(0)
+      return line
+    })
+
+    const nextBlock = nextLines.join('\n')
+    const nextText = text.slice(0, firstLineStart) + nextBlock + text.slice(lastLineEnd)
+
+    const deltaBefore = (index) => {
+      let delta = 0
+      for (let i = 0; i < lineOffsets.length; i++) {
+        const absoluteLineStart = firstLineStart + lineOffsets[i]
+        if (absoluteLineStart < index) delta += deltas[i]
+      }
+      return delta
+    }
+
+    const nextSelectionStart = selectionStart + deltaBefore(selectionStart)
+    const nextSelectionEnd = selectionEnd + deltaBefore(selectionEnd)
+    const nextPos = dir === '<-'
+      ? {start: nextSelectionEnd, end: nextSelectionStart, dir}
+      : {start: nextSelectionStart, end: nextSelectionEnd, dir}
+
+    return {text: nextText, pos: nextPos}
+  }
+
+  function applyEnterToText(text, pos) {
+    const selectionStart = Math.min(pos.start, pos.end)
+    const selectionEnd = Math.max(pos.start, pos.end)
+    const lineStart = text.lastIndexOf('\n', Math.max(0, selectionStart - 1)) + 1
+    const lineEndIndex = text.indexOf('\n', selectionStart)
+    const lineEnd = lineEndIndex === -1 ? text.length : lineEndIndex
+    const lineBeforeCursor = text.slice(lineStart, selectionStart)
+    const lineAfterCursor = text.slice(selectionStart, lineEnd)
+    const linePrefix = text.slice(lineStart, selectionStart)
+    const indent = (linePrefix.match(/^[\t ]*/) || [''])[0]
+    const unorderedList = lineBeforeCursor.match(/^(\s*)([-+*])(\s+)/)
+    const orderedList = lineBeforeCursor.match(/^(\s*)(\d+)([.)])(\s+)/)
+
+    let continuation = indent
+    if (unorderedList) {
+      const [, baseIndent, marker, gap] = unorderedList
+      continuation = baseIndent + marker + gap
+
+      const beforeContent = lineBeforeCursor.slice(unorderedList[0].length)
+      const afterContent = lineAfterCursor
+      if (beforeContent.trim() === '' && afterContent.trim() === '') {
+        continuation = baseIndent
+      }
+    } else if (orderedList) {
+      const [, baseIndent, number, delimiter, gap] = orderedList
+      continuation = baseIndent + (Number(number) + 1) + delimiter + gap
+
+      const beforeContent = lineBeforeCursor.slice(orderedList[0].length)
+      const afterContent = lineAfterCursor
+      if (beforeContent.trim() === '' && afterContent.trim() === '') {
+        continuation = baseIndent
+      }
+    }
+
+    const nextText = text.slice(0, selectionStart) + '\n' + continuation + text.slice(selectionEnd)
+    const cursor = selectionStart + 1 + indent.length
+    const nextPos = {start: cursor + (continuation.length - indent.length), end: cursor + (continuation.length - indent.length), dir: '->'}
+
+    return {text: nextText, pos: nextPos}
+  }
 
   function save() {
     const s = getSelection()
