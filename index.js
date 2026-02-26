@@ -718,57 +718,32 @@ function Editor(element, highlight) {
 
   function save() {
     const s = getSelection()
-    const pos = {start: 0, end: 0, dir: undefined}
-    let {anchorNode, anchorOffset, focusNode, focusOffset} = s
+    const pos = {start: 0, end: 0, dir: '->'}
+    const {anchorNode, anchorOffset, focusNode, focusOffset} = s
     if (!anchorNode || !focusNode) throw 'error1'
-    if (anchorNode === element && focusNode === element) {
-      pos.start = (anchorOffset > 0 && element.textContent) ? element.textContent.length : 0
-      pos.end = (focusOffset > 0 && element.textContent) ? element.textContent.length : 0
-      pos.dir = (focusOffset >= anchorOffset) ? '->' : '<-'
-      return pos
-    }
-    if (anchorNode.nodeType === Node.ELEMENT_NODE) {
-      const node = document.createTextNode('')
-      anchorNode.insertBefore(node, anchorNode.childNodes[anchorOffset])
-      anchorNode = node
-      anchorOffset = 0
-    }
-    if (focusNode.nodeType === Node.ELEMENT_NODE) {
-      const node = document.createTextNode('')
-      focusNode.insertBefore(node, focusNode.childNodes[focusOffset])
-      focusNode = node
-      focusOffset = 0
-    }
-    visit(element, el => {
-      if (el === anchorNode && el === focusNode) {
-        pos.start += anchorOffset
-        pos.end += focusOffset
-        pos.dir = anchorOffset <= focusOffset ? '->' : '<-'
-        return 'stop'
-      }
-      if (el === anchorNode) {
-        pos.start += anchorOffset
-        if (!pos.dir) {
-          pos.dir = '->'
-        } else {
-          return 'stop'
-        }
-      } else if (el === focusNode) {
-        pos.end += focusOffset
-        if (!pos.dir) {
-          pos.dir = '<-'
-        } else {
-          return 'stop'
-        }
-      }
-      if (el.nodeType === Node.TEXT_NODE) {
-        if (pos.dir !== '->') pos.start += el.nodeValue.length
-        if (pos.dir !== '<-') pos.end += el.nodeValue.length
-      }
-    })
 
-    element.normalize()
+    const totalLength = (element.textContent || '').length
+    const start = clamp(getTextOffset(anchorNode, anchorOffset), 0, totalLength)
+    const end = clamp(getTextOffset(focusNode, focusOffset), 0, totalLength)
+    pos.start = start
+    pos.end = end
+    pos.dir = end >= start ? '->' : '<-'
     return pos
+  }
+
+  function getTextOffset(node, offset) {
+    try {
+      const range = document.createRange()
+      range.selectNodeContents(element)
+      range.setEnd(node, offset)
+      return range.toString().length
+    } catch (error) {
+      return (element.textContent || '').length
+    }
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value))
   }
 
   function restore(pos) {
