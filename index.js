@@ -177,6 +177,59 @@ function parseMarkdown(element) {
   const input = element.textContent
   const frag = document.createDocumentFragment()
 
+  function tokenSpan(className, text) {
+    const span = document.createElement('span')
+    span.className = className
+    span.textContent = text
+    return span
+  }
+
+  function appendDelimitedToken(className, raw, delimiter) {
+    const span = document.createElement('span')
+    span.className = className
+    span.appendChild(tokenSpan('md-symbol', delimiter))
+    span.appendChild(tokenSpan('md-token-content', raw.slice(delimiter.length, -delimiter.length)))
+    span.appendChild(tokenSpan('md-symbol', delimiter))
+    frag.appendChild(span)
+  }
+
+  function appendHeadingToken(className, raw) {
+    const match = raw.match(/^(#{1,6}[ \t]+)(.*)$/)
+    const span = document.createElement('span')
+    span.className = className
+    if (!match) {
+      span.textContent = raw
+      frag.appendChild(span)
+      return
+    }
+    span.appendChild(tokenSpan('md-symbol', match[1]))
+    span.appendChild(tokenSpan('md-token-content', match[2]))
+    frag.appendChild(span)
+  }
+
+  function appendCodeblockToken(raw) {
+    const fence = raw.startsWith('```') ? '```' : '~~~'
+    const openingNewline = raw.indexOf('\n')
+    const closingFenceLine = raw.lastIndexOf('\n' + fence)
+    const span = document.createElement('span')
+    span.className = 'md-codeblock'
+
+    if (openingNewline === -1 || closingFenceLine === -1 || closingFenceLine <= openingNewline) {
+      span.textContent = raw
+      frag.appendChild(span)
+      return
+    }
+
+    const openingFence = raw.slice(0, openingNewline + 1)
+    const body = raw.slice(openingNewline + 1, closingFenceLine + 1)
+    const closingFence = raw.slice(closingFenceLine + 1)
+
+    span.appendChild(tokenSpan('md-symbol', openingFence))
+    span.appendChild(tokenSpan('md-token-content', body))
+    span.appendChild(tokenSpan('md-symbol', closingFence))
+    frag.appendChild(span)
+  }
+
   const matchers = [
     {name: 'md-codeblock', re: /```[^\n]*\n[\s\S]*?\n```/y},
     {name: 'md-codeblock', re: /~~~[^\n]*\n[\s\S]*?\n~~~/y},
@@ -188,10 +241,10 @@ function parseMarkdown(element) {
     {name: 'md-h6', re: /^######[ \t]+[^\n]*$/my},
     {name: 'md-code', re: /`[^`\n]*`/y},
     {name: 'md-bold', re: /\*\*[^*\n]+?\*\*/y},
-    {name: 'md-bold', re: /__[^_\n]+?__/y},
+    {name: 'md-bold', re: /(?<![A-Za-z0-9_])__(?=\S)[^_\n]*?\S__(?![A-Za-z0-9_])/y},
     {name: 'md-strike', re: /~~[^~\n]+?~~/y},
     {name: 'md-italic', re: /\*[^*\n]+?\*/y},
-    {name: 'md-italic', re: /_[^_\n]+?_/y},
+    {name: 'md-italic', re: /(?<![A-Za-z0-9_])_(?=\S)[^_\n]*?\S_(?![A-Za-z0-9_])/y},
     {name: 'md-url', re: /https?:\/\/[^\s<>()\[\]{}"'`]+/y},
   ]
 
@@ -213,6 +266,18 @@ function parseMarkdown(element) {
           a.target = '_blank'
           a.rel = 'noopener noreferrer'
           frag.appendChild(a)
+        } else if (m.name === 'md-codeblock') {
+          appendCodeblockToken(raw)
+        } else if (m.name.startsWith('md-h')) {
+          appendHeadingToken(m.name, raw)
+        } else if (m.name === 'md-bold') {
+          appendDelimitedToken(m.name, raw, raw.startsWith('**') ? '**' : '__')
+        } else if (m.name === 'md-italic') {
+          appendDelimitedToken(m.name, raw, raw.startsWith('*') ? '*' : '_')
+        } else if (m.name === 'md-strike') {
+          appendDelimitedToken(m.name, raw, '~~')
+        } else if (m.name === 'md-code') {
+          appendDelimitedToken(m.name, raw, '`')
         } else {
           const span = document.createElement('span')
           span.className = m.name
@@ -243,9 +308,9 @@ function parseMarkdown(element) {
     i = next
   }
 
-  article.textContent = ''
-  article.appendChild(frag)
-  article.normalize()
+  element.textContent = ''
+  element.appendChild(frag)
+  element.normalize()
 }
 
 function initUI() {
